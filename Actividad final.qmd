@@ -1,0 +1,193 @@
+---
+title: "Amenidades de la Salud en Esmeraldas (080150)"
+author: "Yojayra Farinango"
+date: "2024-08-22"
+format: docx
+editor: visual
+---
+
+## OpenStreetMaps
+
+```{r, message=FALSE}
+#Primero cargamos la librerías
+#install.packages(c("sf", "ggplot2", "dplyr"))
+#install.packages("httr2", type = "binary")
+##install.packages("dplyr")  # O install.packages("tidyverse")
+library(sf)
+library(tidyverse)
+library(osmdata)
+library(spdep)
+library(cowplot)
+library(httr2)
+library(ggmap)
+library(readxl)
+library(dplyr)
+library(stringr)            
+
+```
+
+```{r}
+
+library(osmdata)
+bbox <- getbb("Esmeraldas, Ecuador")
+query <- opq(bbox) %>%
+  add_osm_feature(key = "amenity", value = "hospital") %>% 
+  osmdata_sf()
+  
+puntos <- query$osm_points
+
+
+```
+
+Colocamos los puntos en el mapa
+
+```{r}
+# Cargar y preparar los datos de zonas censales
+zonas <- st_read("./data/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021.gdb/", layer = "zon_a")
+
+zonas <- zonas %>% filter(str_detect(zon, "^08"))
+```
+
+Graficamos el mapa de la provincia de Esmeraldas
+
+```{r, echo =FALSE, fig.height= 6, fig.dpi= 400}
+
+ggplot() +
+  geom_sf(data = zonas) +
+  geom_sf(data = puntos) +
+  labs(
+    title = "Figura N°1. Distribución de hospitales de la provincia de Esmeraldas",
+    subtitle = "Fuente OpenStreetMaps"
+  )
+
+
+```
+
+```{r}
+#install.packages("readxl")
+excel_sheets("./data/01_2022_CPV_Estructura_poblacional.xlsx")
+
+poblacion <- read_excel("./data/01_2022_CPV_Estructura_poblacional.xlsx",
+                        sheet =  "1.2",
+                        range = "B10:G1299")
+names(poblacion) <- c("provincia", "canton", "parroquia", "total_nacional", "hombres", "mujeres")
+```
+
+Limpiamos la base antes de trabajarlo.
+
+```{r}
+poblacion <- poblacion %>%
+  filter(!is.na(provincia),
+         str_detect(parroquia, "^Total|Nacional", negate = TRUE))
+
+library(dplyr)
+library(stringr)
+
+poblacion <- poblacion %>%
+  mutate(across(c(provincia, canton, parroquia), str_to_upper))
+
+print(poblacion)
+
+```
+
+Ahora tenemos la base depurada y mostramos a continuación
+
+```{r}
+dpa <- read_excel("./data/CODIFICACIÓN_2022.xlsx", sheet = "CODIGOS")
+```
+
+Ahora cruzamos la bases por provincia, cantón y parroquia
+
+```{r}
+poblacion <- poblacion  %>%
+  left_join(dpa, by= c("provincia"= "DPA_DESPRO",
+                       "canton" = "DPA_DESCAN",
+                       "parroquia" = "DPA_DESPAR"))
+```
+
+Ahora unimos los polígonos a nivel de parroquia, porque está a nivel de zona censal.
+
+```{r}
+zonas <- zonas %>%
+  mutate(DPA_PARROQ = str_sub(zon, 1, 6))
+
+parroquias <- zonas %>%
+  group_by(DPA_PARROQ) %>%
+  summarise(Shape = st_union(Shape))
+  
+```
+
+Unimos los datos de la población
+
+```{r}
+parroquias <- parroquias %>%
+  left_join(poblacion)
+```
+
+Comparamos a través de un mapa de calor
+
+```{r, echo =FALSE, fig.height= 6, fig.dpi= 400}
+parroquias %>%
+  ggplot() +
+  geom_sf(aes (fill = log(total_nacional)))+
+  geom_sf(data = puntos) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(title = "Figura N°2: Densidad Poblacional de la provincia de Esmeraldas",
+       subtitle = "Fuente INEC")
+```
+
+Calculamos el indicador de Amenidades por cada 1000 habitantes
+
+```{r}
+puntos <- st_transform(x = puntos, crs = st_crs(parroquias))
+
+parroquias_puntos <- st_join(x = puntos, y = parroquias, join = st_within)
+
+parroquias_puntos <- parroquias_puntos %>%
+  count(DPA_PARROQ, name = "hospitales") %>%
+  as_tibble()
+
+parroquias <- parroquias %>%
+  left_join(parroquias_puntos)
+
+#Reemplazamos por cero en las parroquias que no tienen hospitales
+parroquias <- parroquias %>%
+  mutate(hospitales = replace_na(hospitales,0))
+```
+
+A continuación calculamos el indicador
+
+```{r, echo =FALSE, fig.height= 6, fig.dpi= 400}
+
+parroquias <- parroquias %>%
+  mutate(indicador = (hospitales/total_nacional)*1000)
+
+parroquias %>%
+  ggplot() +
+  geom_sf(aes (fill = indicador))+
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(title = "Figura N°3: Indicador de amenidades de salud por cada 1000 habitantes en Esmeraldas",
+       subtitle = "Fuente INEC")
+```
+
+## Cálculo del índice de Morán
+
+Creamos la matriz de pesos
+
+```{r}
+# Primero creamos la matriz binaria
+vecinos <- poly2nb(parroquias, queen = TRUE)
+
+#Matriz de pesos
+vecinos_pesos <- nb2listw(vecinos, style = "W", zero.policy = TRUE)
+```
+
+Procedemos a cálcular el índice de Moran
+
+```{r, warning=FALSE}
+
+# Calcular índice de Moran
+#moran <- moran.test(parroquias, vecinos_pesos, alternative = "greater")
+
+#moran
+```
